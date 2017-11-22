@@ -1,0 +1,71 @@
+- hosts: localhost
+  connection: local
+  vars:
+    http_proxy: http://proxy.example.com:8080
+    artifact_repo: artifacts.example.com
+    subnets:
+      - subnet-12345678
+      - subnet-12345679
+  roles:
+    - role: simple-cluster
+      simple_cluster:
+        stack_name: stacky-dev
+        state: '{{ state | default("present") }}'
+        http_proxy: '{{ http_proxy }}'
+        vpc_id: vpc-12345678
+        load_balancer:
+          ingress:
+            - cidr_ip: 0.0.0.0/0
+              from_port: 443
+              to_port: 443
+          egress:
+            - destination_security_group_id: { Ref: AutoscalingGroup }
+              from_port: 8443
+              to_port: 8443
+          subnets: '{{ subnets }}'
+          health_check:
+            target: HTTPS:8443/
+          listeners:
+            - instance_port: 8443
+              instance_protocol: TCP
+              load_balancer_port: 443
+              protocol: TCP
+        autoscaling_group:
+          ingress:
+            - source_security_group_id: { Ref: LoadBalancer }
+              from_port: 8443
+              to_port: 8443
+            - cidr_ip: 10.0.0.0/8
+              from_port: 22
+              to_port: 22
+          subnets: '{{ subnets }}'
+          min_size: 1
+          image_id: ami-12345678
+          instance_type: t2.micro
+          iam_instance_profile: profile-123
+          key_name: k-123
+          provisioner:
+            type: ansible
+            systemd_schedule: 5min
+            config:
+              library: /etc/ansible/roles/ansible-library/library
+              lookup_plugins: /etc/ansible/roles/ansible-library/lookup
+            pip_requirements:
+              - { name: ansible, version: '2.4.0.0' }
+              - { name: boto3, version: '1.4.7' }
+            ansible_requirements:
+              - src: http://{{ artifact_repo }}/ansible-roles/helper-library.1.2.3.tar.gz
+                name: helper-library
+              - src: http://{{ artifact_repo }}/ansible-roles/important-role-0.1.0.tar.gz
+                name: important-role
+            environment:
+              https_proxy: '{{ http_proxy }}'
+            roles:
+              - role: important-role
+                important_role:
+                  ssm_parameters:
+                    - name: /stacky-dev/database/password
+                      dest: /run/secrets/database/password
+                      mode: '0400'
+                      owner: 1000
+                      group: 1000

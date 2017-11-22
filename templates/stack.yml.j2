@@ -1,0 +1,307 @@
+#jinja2: trim_blocks:False
+
+AWSTemplateFormatVersion: '2010-09-09'
+
+Description: Simple cluster
+
+Resources:
+{%- if 'load_balancer' in simple_cluster %}
+  LoadBalancerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for load balancer
+      VpcId: {{ simple_cluster.vpc_id }}
+
+  {%- for rule in simple_cluster.load_balancer.ingress | default([]) %}
+  LoadBalancerIngress{{ loop.index }}:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref LoadBalancerSecuritygroup
+      {%- if 'cidr_ip' in rule %}
+      CidrIp: {{ rule.cidr_ip }}
+      {%- elif 'cidr_ipv6' in rule %}
+      CidrIpv6: {{ rule.cidr_ipv6 }}
+      {%- elif 'source_security_group_id' in rule %}
+      SourceSecurityGroupId: {{ rule.source_security_group_id | to_json }}
+      {%- if 'source_security_group_owner_id' in rule %}
+      SourceSecurityGroupOwnerId: {{ rule.source_security_group_owner_id }}
+      {%- endif %}
+      {%- endif %}
+      FromPort: {{ rule.from_port }}
+      IpProtocol: {{ rule.ip_protocol | default('tcp') }}
+      ToPort: {{ rule.to_port }}
+  {%- endfor %}
+
+  {%- for rule in simple_cluster.load_balancer.egress | default([]) %}
+  LoadBalancerEgress{{ loop.index }}:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      GroupId: !Ref LoadBalancerSecuritygroup
+      {%- if 'cidr_ip' in rule %}
+      CidrIp: {{ rule.cidr_ip }}
+      {%- elif 'cidr_ipv6' in rule %}
+      CidrIpv6: {{ rule.cidr_ipv6 }}
+      {%- elif 'destination_prefix_list_id' in rule %}
+      DestinationPrefixListId: {{ rule.destination_prefix_list_id }}
+      {%- elif 'destination_security_group_id' in rule %}
+      DestinationSecurityGroupId: {{ rule.destination_security_group_id | to_json }}
+      {%- endif %}
+      FromPort: {{ rule.from_port }}
+      IpProtocol: {{ rule.ip_protocol | default('tcp') }}
+      ToPort: {{ rule.to_port }}
+  {%- endfor %}
+
+  LoadBalancer:
+    Type: AWS::ElasticLoadBalancing::LoadBalancer
+    Properties:
+      ConnectionDrainingPolicy:
+        Enabled: true
+        Timeout: 10
+      CrossZone: true
+      HealthCheck:
+        HealthyThreshold: {{ simple_cluster.load_balancer.health_check.healthy_threshold | default(2) }}
+        Interval: {{ simple_cluster.load_balancer.health_check.healthy_threshold | default(30) }}
+        Target: {{ simple_cluster.load_balancer.health_check.target }}
+        Timeout: {{ simple_cluster.load_balancer.health_check.timeout | default(3) }}
+        UnhealthyThreshold: {{ simple_cluster.load_balancer.health_check.unhealthy_threshold | default(2) }}
+      Listeners: {{ simple_cluster.load_balancer.listeners | snake_to_pascal | to_json }}
+      Scheme: {{ simple_cluster.load_balancer.scheme | default('internal') }}
+      SecurityGroups:
+        - !Ref LoadBalancerSecurityGroup
+      Subnets: {{ simple_cluster.load_balancer.subnets | to_json }}
+{%- endif %}
+
+  AutoscalingGroupSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for autoscaling group
+      VpcId: {{ simple_cluster.vpc_id }}
+
+  {%- for rule in simple_cluster.autoscaling_group.ingress | default([]) %}
+  AutoscalingGroupIngress{{ loop.index }}:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref AutoscalingGroupSecurityGroup
+      {%- if 'cidr_ip' in rule %}
+      CidrIp: {{ rule.cidr_ip }}
+      {%- elif 'cidr_ipv6' in rule %}
+      CidrIpv6: {{ rule.cidr_ipv6 }}
+      {%- elif 'source_security_group_id' in rule %}
+      SourceSecurityGroupId: {{ rule.source_security_group_id | to_json }}
+      {%- if 'source_security_group_owner_id' in rule %}
+      SourceSecurityGroupOwnerId: {{ rule.source_security_group_owner_id }}
+      {%- endif %}
+      {%- endif %}
+      FromPort: {{ rule.from_port }}
+      IpProtocol: {{ rule.ip_protocol | default('tcp') }}
+      ToPort: {{ rule.to_port }}
+  {%- endfor %}
+
+  {%- for rule in simple_cluster.autoscaling_group.egress | default([]) %}
+  AutoscalingGroupEgress{{ loop.index }}:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      GroupId: !Ref AutoscalingGroupSecurityGroup
+      {%- if 'cidr_ip' in rule %}
+      CidrIp: {{ rule.cidr_ip }}
+      {%- elif 'cidr_ipv6' in rule %}
+      CidrIpv6: {{ rule.cidr_ipv6 }}
+      {%- elif 'destination_prefix_list_id' in rule %}
+      DestinationPrefixListId: {{ rule.destination_prefix_list_id }}
+      {%- elif 'destination_security_group_id' in rule %}
+      DestinationSecurityGroupId: {{ rule.destination_security_group_id | to_json }}
+      {%- endif %}
+      FromPort: {{ rule.from_port }}
+      IpProtocol: {{ rule.ip_protocol | default('tcp') }}
+      ToPort: {{ rule.to_port }}
+  {%- endfor %}
+
+  AutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      DesiredCapacity: {{ simple_cluster.autoscaling_group.min_size }}
+      LaunchConfigurationName: !Ref LaunchConfiguration
+      MaxSize: {{ simple_cluster.autoscaling_group.max_size | default(10) }}
+      MinSize: {{ simple_cluster.autoscaling_group.min_size }}
+      VPCZoneIdentifier: {{ simple_cluster.autoscaling_group.subnets | to_json }}
+      {%- if 'load_balancer' in simple_cluster %}
+      LoadBalancerNames:
+        - !Ref LoadBalancer
+      {%- endif %}
+    CreationPolicy:
+      ResourceSignal:
+        Count: {{ simple_cluster.autoscaling_group.min_size }}
+        Timeout: {{ simple_cluster.autoscaling_group.provisioner.timeout | default('PT15M') }}
+    UpdatePolicy:
+      AutoScalingScheduledAction:
+        IgnoreUnmodifiedGroupSizeProperties: true
+      AutoScalingRollingUpdate:
+        MinInstancesInService: 1
+        MaxBatchSize: 1
+        PauseTime: PT5M
+        WaitOnResourceSignals: true
+
+  LaunchConfiguration:
+    Type: AWS::AutoScaling::LaunchConfiguration
+    {%- if simple_cluster.autoscaling_group.provisioner.type == 'ansible' %}
+    Metadata:
+      AWS::CloudFormation::Init:
+        config:
+          files:
+            /etc/ansible/playbook.yml:
+              owner: root
+              group: root
+              mode: '000644'
+              content: |
+                - hosts: localhost
+                  connection: local
+                  vars_files:
+                    - /etc/ansible/vars.yml
+                  roles: {{ simple_cluster.autoscaling_group.provisioner.roles | to_json }}
+            /etc/ansible/vars.yml:
+              owner: root
+              group: root
+              mode: '000644'
+              content: |
+                {{ simple_cluster.autoscaling_group.provisioner.vars | default({}) | to_json }}
+            {%- if 'config' in simple_cluster.autoscaling_group.provisioner %}
+            /etc/ansible/ansible.cfg:
+              owner: root
+              group: root
+              mode: '000644'
+              content: |
+                [defaults]
+                {%- for key, value in simple_cluster.autoscaling_group.provisioner.config.items() %}
+                {{ key }} = {{ value }}
+                {%- endfor %}
+            {%- endif %}
+            /etc/ansible/requirements.txt:
+              owner: root
+              group: root
+              mode: '000644'
+              content: |
+                {%- if 'pypi_index' in simple_cluster.autoscaling_group.provisioner %}
+                -i {{ simple_cluster.autoscaling_group.provisioner.pypi_index }}
+                {%- endif %}
+                {%- for requirement in simple_cluster.autoscaling_group.provisioner.pip_requirements | default([{'name': 'ansible'}]) %}
+                {{ requirement.name }}{% if 'version' in requirement %}=={{ requirement.version }}{% endif %}
+                {%- endfor %}
+            /etc/ansible/requirements.yml:
+              owner: root
+              group: root
+              mode: '000644'
+              content: |
+                {{ simple_cluster.autoscaling_group.provisioner.ansible_requirements | to_json }}
+            {%- if 'systemd_schedule' in simple_cluster.autoscaling_group.provisioner %}
+            /etc/sysconfig/ansible-playbook:
+              owner: root
+              group: root
+              mode: '000644'
+              content: !Sub |
+                AWS_DEFAULT_REGION=${AWS::Region}
+                {%- for key, value in simple_cluster.autoscaling_group.provisioner.environment.items() | default([]) %}
+                {{ key }}={{ value}}
+                {%- endfor %}
+            /etc/systemd/system/ansible-playbook.service:
+              owner: root
+              group: root
+              mode: '000644'
+              content: |
+                [Unit]
+                Description=Ansible playbook runner
+                [Service]
+                Type=oneshot
+                EnvironmentFile=-/etc/sysconfig/ansible-playbook
+                ExecStart={{ simple_cluster.autoscaling_group.provisioner.python_base | default('/usr') }}/bin/ansible-playbook /etc/ansible/playbook.yml
+                [Install]
+                WantedBy=multi-user.target
+            /etc/systemd/system/ansible-playbook.timer:
+              owner: root
+              group: root
+              mode: '000644'
+              content: |
+                [Unit]
+                Description=Run ansible-playbook on a schedule
+                [Timer]
+                OnBootSec=1min
+                OnUnitActiveSec={{ simple_cluster.autoscaling_group.provisioner.systemd_schedule }}
+                [Install]
+                WantedBy=timers.target
+            {%- endif %}
+          commands:
+            a_pip_install:
+              command: |
+                {{ simple_cluster.autoscaling_group.provisioner.python_base | default('/usr') }}/bin/pip install \
+                  {%- if 'pypi_index' in simple_cluster.autoscaling_group.provisioner %}
+                  --trusted-host {{ simple_cluster.autoscaling_group.provisioner.pypi_index | urlsplit('hostname') }} \
+                  {%- endif %}
+                  -r /etc/ansible/requirements.txt
+            b_ansible_galaxy_install:
+              command: |
+                {{ simple_cluster.autoscaling_group.provisioner.python_base | default('/usr') }}/bin/ansible-galaxy install \
+                  -p /etc/ansible/roles/ \
+                  -r /etc/ansible/requirements.yml
+            c_ansible_playbook:
+              command: {{ simple_cluster.autoscaling_group.provisioner.python_base | default('/usr') }}/bin/ansible-playbook /etc/ansible/playbook.yml
+              env:
+                AWS_DEFAULT_REGION: !Ref AWS::Region
+                {%- for key, value in simple_cluster.autoscaling_group.provisioner.environment.items() | default([]) %}
+                {{ key }}: {{ value }}
+                {%- endfor %}
+            {%- if 'systemd_schedule' in simple_cluster.autoscaling_group.provisioner %}
+            d_systemctl_daemon_reload:
+              command: /bin/systemctl daemon-reload
+            e_systemctl_enable_ansible_timer:
+              command: /bin/systemctl enable ansible-playbook.timer
+            f_systemctl_start_ansible_timer:
+              command: /bin/systemctl start ansible-playbook.timer
+            {%- endif %}
+    {%- endif %}    {# simple_cluster.autoscaling_group.provisioner.type == 'ansible' #}
+    Properties:
+      {%- if 'iam_instance_profile' in simple_cluster.autoscaling_group %}
+      IamInstanceProfile: {{ simple_cluster.autoscaling_group.iam_instance_profile }}
+      {%- endif %}
+      ImageId: {{ simple_cluster.autoscaling_group.image_id }}
+      InstanceType: {{ simple_cluster.autoscaling_group.instance_type | default('m3.large') }}
+      KeyName: {{ simple_cluster.autoscaling_group.key_name }}
+      PlacementTenancy: {{ simple_cluster.autoscaling_group.placement_tenancy | default('default') }}
+      SecurityGroups:
+        - !Ref AutoscalingGroupSecurityGroup
+      UserData:
+        Fn::Base64:
+          !Sub |
+            {%- if simple_cluster.autoscaling_group.provisioner.type == 'user_data' %}
+            {{ simple_cluster.autoscaling_group.provisioner.content | default('') }}
+            {%- else %}
+            #!/bin/sh
+            {{ simple_cluster.autoscaling_group.provisioner.cfn_init | default('/opt/aws/bin/cfn-init') }} -s ${AWS::StackName} \
+              --region ${AWS::Region} \
+              {%- if 'http_proxy' in simple_cluster %}
+              --https-proxy {{ simple_cluster.http_proxy }} \
+              {%- endif %}
+              -r LaunchConfiguration
+
+            {{ simple_cluster.autoscaling_group.provisioner.cfn_signal | default('/opt/aws/bin/cfn-signal') }} --stack ${AWS::StackName} \
+              --resource AutoScalingGroup \
+              --region ${AWS::Region} \
+              {%- if 'http_proxy' in simple_cluster %}
+              --https-proxy {{ simple_cluster.http_proxy }} \
+              {%- endif %}
+              -e ${!?}
+            {%- endif %}
+
+Outputs:
+{%- if 'load_balancer' in simple_cluster %}
+  LoadBalancerSecurityGroup:
+    Description: Security group of load balancer
+    Value: !Ref LoadBalancerSecurityGroup
+  LoadBalancerDns:
+    Description: DNS name of load balancer
+    Value: !Sub ${LoadBalancer.DNSName}
+{%- endif %}
+  AutoscalingGroupSecurityGroup:
+    Description: Security group of autoscaling group
+    Value: !Ref AutoscalingGroupSecurityGroup
+  AutoScalingGroup:
+    Description: Name of autoscaling group
+    Value: !Ref AutoScalingGroup

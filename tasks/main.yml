@@ -1,0 +1,29 @@
+---
+- name: register current directory
+  command: pwd
+  register: cwd
+  changed_when: false
+
+- name: ensure cache directory
+  file:
+    name: '{{ cwd.stdout }}/.cache/simple-cluster-{{ simple_cluster.stack_name }}'
+    state: directory
+  register: cache_dir
+
+- name: expand cloudformation template
+  template:
+    src: stack.yml.j2
+    dest: '{{ cache_dir.path }}/stack.yml'
+
+- name: 'call cloudformation with state {{ simple_cluster.state }}'
+  cloudformation:
+    stack_name: '{{ simple_cluster.stack_name }}'
+    state: '{{ simple_cluster.state | default("present") }}'
+    template: '{{ cache_dir.path }}/stack.yml'
+  register: simple_cluster_ref
+  tags:
+    - build
+
+- name: export stack reference
+  set_fact:
+    cf_stacks: '{{ cf_stacks | combine({ simple_cluster.stack_name: simple_cluster_ref }) }}'
